@@ -1,6 +1,8 @@
-use crate::gc_ref::{GCArc, GCArcWeak, GCRef, GCTraceable};
-use crate::gc::GC;
+use arc_gc::arc::{GCArc, GCArcWeak};
+use arc_gc::gc::GC;
+use arc_gc::traceable::GCTraceable;
 
+#[allow(dead_code)]
 struct GCInt {
     value: i32
 }
@@ -12,7 +14,13 @@ struct GCList {
 impl GCTraceable for GCList {
     fn visit(&self) {
         for v in &self.values {
-            v.mark_and_visit();
+            match v.upgrade() {
+                Some(ref c) => c.mark_and_visit(),
+                None => {
+                    panic!("Weak reference is None");
+                }
+                
+            }
         }
     }
 }

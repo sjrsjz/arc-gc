@@ -5,3 +5,10 @@ version = 4
 [[package]]
 name = "arc-gc"
 version = "0.1.0"
+
+[[package]]
+name = "gc_test"
+version = "0.1.0"
+dependencies = [
+ "arc-gc",
+]

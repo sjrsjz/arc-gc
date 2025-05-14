@@ -3,8 +3,8 @@ mod advanced_tests {
     use std::cell::RefCell;
     use std::rc::Rc;
     
-    use crate::gc::GC;
-    use crate::gc_ref::{GCArc, GCRef, GCTraceable};
+    use arc_gc::gc::GC;
+    use arc_gc::arc::{GCArc, GCRef};
 
     // 可以记录是否被删除的复杂结构
     struct ComplexNode {
@@ -18,7 +18,13 @@ mod advanced_tests {
         fn visit(&self) {
             // 递归访问所有子节点
             for child in &self.children {
-                child.mark_and_visit();
+                match child.upgrade() {
+                    Some(ref c) => c.mark_and_visit(),
+                    None => {
+                        panic!("Weak reference is None");
+                    }
+                    
+                }
             }
             
         }
@@ -32,7 +38,8 @@ mod advanced_tests {
         }
     }
     
-    use crate::gc_ref::GCArcWeak;
+    use arc_gc::arc::GCArcWeak;
+    use arc_gc::traceable::GCTraceable;
     
     #[test]
     fn test_advanced_gc_with_cycles() {

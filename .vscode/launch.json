@@ -1,43 +1,19 @@
 {
-    // 使用 IntelliSense 了解相关属性。 
-    // 悬停以查看现有属性的描述。
-    // 欲了解更多信息，请访问: https://go.microsoft.com/fwlink/?linkid=830387
     "version": "0.2.0",
     "configurations": [
         {
             "type": "lldb",
             "request": "launch",
-            "name": "Debug executable 'rust-gc'",
-            "cargo": {
-                "args": [
-                    "build",
-                    "--bin=rust-gc",
-                    "--package=rust-gc"
-                ],
-                "filter": {
-                    "name": "rust-gc",
-                    "kind": "bin"
-                }
-            },
-            "args": [],
-            "cwd": "${workspaceFolder}"
-        },
-        {
-            "type": "lldb",
-            "request": "launch",
-            "name": "Debug unit tests in executable 'rust-gc'",
+            "name": "Test gc_test",
             "cargo": {
                 "args": [
                     "test",
-                    "--no-run",
-                    "--bin=rust-gc",
-                    "--package=rust-gc"
-                ],
-                "filter": {
-                    "name": "rust-gc",
-                    "kind": "bin"
-                }
+                    "-p",
+                    "gc_test",
+                    "--no-run"
+                ]
             },
+            "program": "${cargo:program}",
             "args": [],
             "cwd": "${workspaceFolder}"
         }

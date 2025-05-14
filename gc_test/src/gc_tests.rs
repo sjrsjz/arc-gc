@@ -1,7 +1,8 @@
 #[cfg(test)]
 mod tests {
-    use crate::gc::GC;
-    use crate::gc_ref::{GCArc, GCRef, GCTraceable};
+    use arc_gc::gc::GC;
+    use arc_gc::arc::GCArc;
+    use arc_gc::traceable::GCTraceable;
 
     // 测试用的简单结构，可以形成图形结构
     struct TestNode {

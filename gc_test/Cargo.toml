@@ -1,0 +1,11 @@
+[package]
+name = "gc_test"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+arc-gc = { path = ".." } 
+
+[lib]
+name = "arc_gc"
+path = "src/lib.rs"

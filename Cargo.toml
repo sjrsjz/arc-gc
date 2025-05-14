@@ -2,5 +2,23 @@
 name = "arc-gc"
 version = "0.1.0"
 edition = "2021"
+description = "A simple GCArc implementation for Rust"
+license-file = "LICENSE"
+authors = ["sjrsjz <sjrsjz@gmail.com>"]
+repository = "https://github.com/sjrsjz/arc-gc"
+documentation = "https://docs.rs/arc-gc"
+readme = "readme.md"
+keywords = ["gc", "garbage-collection", "memory", "arc", "reference-counting"]
+categories = ["memory-management", "rust-patterns"]
+
+[lib]
+name = "arc_gc"
+path = "src/lib.rs"
 
 [dependencies]
+
+[workspace]
+members = [
+    ".", 
+    "gc_test" 
+]

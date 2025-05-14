@@ -1,89 +1,11 @@
-use std::{
-    ptr::NonNull,
-    sync::atomic::{AtomicBool, AtomicUsize},
-};
+use std::ptr::NonNull;
 
-pub trait GCTraceable {
-    fn visit(&self) {}
-}
-
-pub struct GCHeapedObject {
-    pub value: Box<dyn GCTraceable>,
-    pub strong_rc: AtomicUsize,
-    pub weak_rc: AtomicUsize,
-    pub marked: AtomicBool,
-}
-
-impl GCHeapedObject {
-    pub fn new<T: GCTraceable + 'static>(value: T) -> Self {
-        Self {
-            value: Box::new(value),
-            strong_rc: AtomicUsize::new(1),
-            weak_rc: AtomicUsize::new(0),
-            marked: AtomicBool::new(false),
-        }
-    }
-
-    pub fn strong_ref(&self) -> usize {
-        self.strong_rc.load(std::sync::atomic::Ordering::SeqCst)
-    }
-
-    pub fn weak_ref(&self) -> usize {
-        self.weak_rc.load(std::sync::atomic::Ordering::SeqCst)
-    }
-
-    pub fn mark(&self) {
-        self.marked.store(true, std::sync::atomic::Ordering::SeqCst);
-    }
-
-    pub fn unmark(&self) {
-        self.marked
-            .store(false, std::sync::atomic::Ordering::SeqCst);
-    }
-
-    pub fn is_marked(&self) -> bool {
-        self.marked.load(std::sync::atomic::Ordering::SeqCst)
-    }
-
-    pub fn downcast_mut<T: GCTraceable>(self: &mut Self) -> &mut T {
-        unsafe { &mut *(self.value.as_mut() as *mut dyn GCTraceable as *mut T) }
-    }
-    pub fn downcast<T: GCTraceable>(self: &Self) -> &T {
-        unsafe { &*(self.value.as_ref() as *const dyn GCTraceable as *const T) }
-    }
-}
+use crate::{heaped_object::GCHeapedObject, traceable::GCTraceable};
 
 #[allow(dead_code)]
 pub trait GCRef {
     fn strong_ref(&self) -> usize;
     fn weak_ref(&self) -> usize;
-    fn mark_and_visit(&self) {
-        let obj: NonNull<GCHeapedObject> = self.obj_ref();
-        // mark as visited
-        unsafe {
-            if obj.as_ref().is_marked() {
-                return;
-            }
-            obj.as_ref().mark();
-        }
-        self.visit();
-    }
-    fn unmark(&self) {
-        let obj = self.obj_ref();
-        // unmark as visited
-        unsafe {
-            obj.as_ref().unmark();
-        }
-    }
-    fn visit(&self) {}
-    fn obj_ref(&self) -> NonNull<GCHeapedObject>;
-    fn downcast<T: GCTraceable>(self: &Self) -> &T {
-        unsafe { self.obj_ref().as_ref().downcast::<T>() }
-    }
-
-    fn downcast_mut<T: GCTraceable>(self: &mut Self) -> &mut T {
-        unsafe { self.obj_ref().as_mut().downcast_mut::<T>() }
-    }
 }
 
 pub struct GCArc {
@@ -144,6 +66,45 @@ impl GCArc {
     pub fn is_marked(&self) -> bool {
         unsafe { self.obj.as_ref().is_marked() }
     }
+
+    pub fn mark_and_visit(&self) {
+        // mark as visited
+        unsafe {
+            if self.obj.as_ref().is_marked() {
+                return;
+            }
+            self.obj.as_ref().mark();
+        }
+        self.visit();
+    }
+    pub fn unmark(&self) {
+        // unmark as visited
+        unsafe {
+            self.obj.as_ref().unmark();
+        }
+    }
+
+    pub fn downcast<T: GCTraceable + 'static>(self: &Self) -> &T {
+        unsafe { self.obj.as_ref().downcast::<T>() }
+    }
+
+    pub fn downcast_mut<T: GCTraceable + 'static>(self: &mut Self) -> &mut T {
+        unsafe { self.obj.as_mut().downcast_mut::<T>() }
+    }
+
+    pub fn isinstance<T: GCTraceable + 'static>(self: &Self) -> bool {
+        unsafe { self.obj.as_ref().isinstance::<T>() }
+    }
+
+    fn visit(&self) {
+        unsafe {
+            self.obj.as_ref().as_ref().visit();
+        }
+    }
+
+    pub(crate) fn ptr_eq(a: &GCArc, b: &GCArc) -> bool {
+        unsafe { std::ptr::eq(a.obj.as_ref(), b.obj.as_ref()) }
+    }
 }
 
 impl Clone for GCArc {
@@ -166,16 +127,6 @@ impl GCRef for GCArc {
     fn weak_ref(&self) -> usize {
         unsafe { self.obj.as_ref().weak_ref() }
     }
-
-    fn visit(&self) {
-        unsafe {
-            self.obj.as_ref().value.visit();
-        }
-    }
-
-    fn obj_ref(&self) -> NonNull<GCHeapedObject> {
-        self.obj
-    }
 }
 
 impl Drop for GCArc {
@@ -197,7 +148,11 @@ impl Drop for GCArc {
                 .fetch_sub(1, std::sync::atomic::Ordering::SeqCst)
                 == 1
             {
-                drop(Box::from_raw(self.obj.as_ptr()));
+                self.obj.as_mut().drop_value();
+                // 如果没有弱引用，释放对象
+                if self.obj.as_ref().weak_ref() == 0 {
+                    drop(Box::from_raw(self.obj.as_ptr()));
+                }
             }
         }
     }
@@ -215,10 +170,6 @@ impl GCArcWeak {
     pub unsafe fn from_raw(obj: NonNull<GCHeapedObject>) -> Self {
         Self { obj }
     }
-    pub(crate) fn is_marked(&self) -> bool {
-        unsafe { self.obj.as_ref().is_marked() }
-    }
-
     pub fn upgrade(&self) -> Option<GCArc> {
         unsafe {
             let strong_count = self
@@ -261,14 +212,6 @@ impl GCRef for GCArcWeak {
     fn weak_ref(&self) -> usize {
         unsafe { self.obj.as_ref().weak_ref() }
     }
-
-    fn visit(&self) {
-        unsafe { self.obj.as_ref().value.visit() }
-    }
-
-    fn obj_ref(&self) -> NonNull<GCHeapedObject> {
-        self.obj
-    }
 }
 
 impl Drop for GCArcWeak {
@@ -283,10 +226,18 @@ impl Drop for GCArcWeak {
             {
                 panic!("Attempted to drop a GCArcWeak with 0 weak references");
             }
-            self.obj
+            if self
+                .obj
                 .as_ref()
                 .weak_rc
-                .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+                .fetch_sub(1, std::sync::atomic::Ordering::SeqCst)
+                == 1
+            {
+                // 如果没有强引用，释放对象
+                if self.obj.as_ref().strong_ref() == 0 {
+                    drop(Box::from_raw(self.obj.as_ptr()));
+                }
+            }
         }
     }
 }
