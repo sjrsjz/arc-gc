@@ -1,5 +1,5 @@
 [package]
-name = "arc-gc"
+name = "rust-arc-gc"
 version = "0.1.0"
 edition = "2021"
 description = "A simple GCArc implementation for Rust"

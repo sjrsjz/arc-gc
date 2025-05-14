@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-arc-gc = { path = ".." } 
+rust-arc-gc = { path = ".." } 
 
 [lib]
 name = "arc_gc"
