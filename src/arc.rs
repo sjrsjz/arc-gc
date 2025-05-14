@@ -190,6 +190,10 @@ impl GCArcWeak {
             Some(GCArc { obj: self.obj })
         }
     }
+
+    pub fn is_valid(&self) -> bool {
+        unsafe { self.obj.as_ref().strong_ref() > 0 }
+    }
 }
 
 impl Clone for GCArcWeak {
