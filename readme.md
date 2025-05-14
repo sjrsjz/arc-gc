@@ -1,11 +1,11 @@
-# Arc GC (arc-gc)
+# Rust Arc GC (rust-arc-gc)
 
-[![Crates.io](https://img.shields.io/crates/v/arc-gc.svg)](https://crates.io/crates/arc-gc)
+[![Crates.io](https://img.shields.io/crates/v/rust-arc-gc.svg)](https://crates.io/crates/rust-arc-gc)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 ## Introduction
 
-`arc-gc` is a simple garbage collection (GC) implementation library designed for Rust, providing reference counting functionality similar to Rust's standard library `Arc`, but with added garbage collection capabilities. This library is particularly suitable for handling circular reference problems and applications requiring efficient memory management.
+`rust-arc-gc` is a simple garbage collection (GC) implementation library designed for Rust, providing reference counting functionality similar to Rust's standard library `Arc`, but with added garbage collection capabilities. This library is particularly suitable for handling circular reference problems and applications requiring efficient memory management.
 
 This library combines Rust's memory safety features with the convenience of garbage collection, offering a safe way to manage complex object graphs in Rust.
 
@@ -21,12 +21,7 @@ This library combines Rust's memory safety features with the convenience of garb
 
 ### Installation
 
-Add the following dependency to your Cargo.toml file:
-
-```toml
-[dependencies]
-arc-gc = "0.1.0"
-```
+Use `cargo add rust-arc-gc` to add the library to your project.
 
 ### Basic Example
 
