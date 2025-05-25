@@ -6,6 +6,10 @@ use crate::{heaped_object::GCHeapedObject, traceable::GCTraceable};
 pub trait GCRef {
     fn strong_ref(&self) -> usize;
     fn weak_ref(&self) -> usize;
+    fn inc_ref(&self);
+    fn dec_ref(&self);
+    fn inc_weak_ref(&self);
+    fn dec_weak_ref(&self);
 }
 
 pub struct GCArc {
@@ -92,6 +96,11 @@ impl GCArc {
         unsafe { self.obj.as_mut().downcast_mut::<T>() }
     }
 
+    pub fn raw_ptr(&self) -> *mut dyn GCTraceable {
+        unsafe { self.obj.as_ref().value }
+        
+    }
+
     pub fn isinstance<T: GCTraceable + 'static>(self: &Self) -> bool {
         unsafe { self.obj.as_ref().isinstance::<T>() }
     }
@@ -126,6 +135,79 @@ impl GCRef for GCArc {
 
     fn weak_ref(&self) -> usize {
         unsafe { self.obj.as_ref().weak_ref() }
+    }
+
+    fn inc_ref(&self) {
+        unsafe {
+            if self
+                .obj
+                .as_ref()
+                .strong_rc
+                .load(std::sync::atomic::Ordering::SeqCst)
+                == 0
+            {
+                panic!("Attempted to increment a GCArc with 0 strong references");
+            }
+            self.obj
+                .as_ref()
+                .strong_rc
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+
+    fn dec_ref(&self) {
+        unsafe {
+            if self
+                .obj
+                .as_ref()
+                .strong_rc
+                .load(std::sync::atomic::Ordering::SeqCst)
+                == 0
+            {
+                panic!("Attempted to decrement a GCArc with 0 strong references");
+            }
+            if self
+                .obj
+                .as_ref()
+                .strong_rc
+                .fetch_sub(1, std::sync::atomic::Ordering::SeqCst)
+                == 1
+            {
+                drop(Box::from_raw(self.obj.as_ptr()));
+            }
+        }
+    }
+
+    fn inc_weak_ref(&self) {
+        unsafe {
+            self.obj
+                .as_ref()
+                .weak_rc
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+
+    fn dec_weak_ref(&self) {
+        unsafe {
+            if self
+                .obj
+                .as_ref()
+                .weak_rc
+                .load(std::sync::atomic::Ordering::SeqCst)
+                == 0
+            {
+                panic!("Attempted to decrement a GCArc with 0 weak references");
+            }
+            if self
+                .obj
+                .as_ref()
+                .weak_rc
+                .fetch_sub(1, std::sync::atomic::Ordering::SeqCst)
+                == 1
+            {
+                drop(Box::from_raw(self.obj.as_ptr()));
+            }
+        }
     }
 }
 
@@ -215,6 +297,79 @@ impl GCRef for GCArcWeak {
 
     fn weak_ref(&self) -> usize {
         unsafe { self.obj.as_ref().weak_ref() }
+    }
+
+    fn inc_ref(&self) {
+        unsafe {
+            if self
+                .obj
+                .as_ref()
+                .strong_rc
+                .load(std::sync::atomic::Ordering::SeqCst)
+                == 0
+            {
+                panic!("Attempted to increment a GCArcWeak with 0 strong references");
+            }
+            self.obj
+                .as_ref()
+                .strong_rc
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+
+    fn dec_ref(&self) {
+        unsafe {
+            if self
+                .obj
+                .as_ref()
+                .strong_rc
+                .load(std::sync::atomic::Ordering::SeqCst)
+                == 0
+            {
+                panic!("Attempted to decrement a GCArcWeak with 0 strong references");
+            }
+            if self
+                .obj
+                .as_ref()
+                .strong_rc
+                .fetch_sub(1, std::sync::atomic::Ordering::SeqCst)
+                == 1
+            {
+                drop(Box::from_raw(self.obj.as_ptr()));
+            }
+        }
+    }
+
+    fn inc_weak_ref(&self) {
+        unsafe {
+            self.obj
+                .as_ref()
+                .weak_rc
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+
+    fn dec_weak_ref(&self) {
+        unsafe {
+            if self
+                .obj
+                .as_ref()
+                .weak_rc
+                .load(std::sync::atomic::Ordering::SeqCst)
+                == 0
+            {
+                panic!("Attempted to decrement a GCArcWeak with 0 weak references");
+            }
+            if self
+                .obj
+                .as_ref()
+                .weak_rc
+                .fetch_sub(1, std::sync::atomic::Ordering::SeqCst)
+                == 1
+            {
+                drop(Box::from_raw(self.obj.as_ptr()));
+            }
+        }
     }
 }
 
