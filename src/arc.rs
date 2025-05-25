@@ -88,17 +88,24 @@ impl GCArc {
         }
     }
 
-    pub fn downcast<T: GCTraceable + 'static>(self: &Self) -> &T {
+    pub fn downcast<T: GCTraceable + 'static>(&self) -> &T {
         unsafe { self.obj.as_ref().downcast::<T>() }
     }
 
-    pub fn downcast_mut<T: GCTraceable + 'static>(self: &mut Self) -> &mut T {
+    pub fn downcast_mut<T: GCTraceable + 'static>(&mut self) -> &mut T {
         unsafe { self.obj.as_mut().downcast_mut::<T>() }
     }
 
     pub fn raw_ptr(&self) -> *mut dyn GCTraceable {
         unsafe { self.obj.as_ref().value }
-        
+    }
+
+    pub fn raw_mut(&mut self) -> &mut dyn GCTraceable {
+        unsafe { &mut *self.obj.as_mut().value }
+    }
+
+    pub fn raw_ref(&self) -> &dyn GCTraceable {
+        unsafe { &*self.obj.as_ref().value }
     }
 
     pub fn isinstance<T: GCTraceable + 'static>(self: &Self) -> bool {
