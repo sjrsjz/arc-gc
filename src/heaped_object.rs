@@ -1,11 +1,9 @@
-use std::{any::TypeId, sync::atomic::{AtomicBool, AtomicUsize}};
+use std::sync::atomic::{AtomicBool, AtomicUsize};
 
 use crate::traceable::GCTraceable;
 
-
-pub struct GCHeapedObject {
-    pub value: *mut dyn GCTraceable,
-    pub type_id: TypeId,
+pub struct GCHeapedObject<T: GCTraceable + 'static> {
+    pub value: *mut T,
     pub strong_rc: AtomicUsize,
     pub weak_rc: AtomicUsize,
     pub marked: AtomicBool,
@@ -13,11 +11,13 @@ pub struct GCHeapedObject {
 }
 
 #[allow(dead_code)]
-impl GCHeapedObject {
-    pub fn new<T: GCTraceable + 'static>(value: T) -> Self {
+impl<T> GCHeapedObject<T>
+where
+    T: GCTraceable + 'static,
+{
+    pub fn new(value: T) -> Self {
         Self {
             value: Box::into_raw(Box::new(value)),
-            type_id: TypeId::of::<T>(),
             strong_rc: AtomicUsize::new(1),
             weak_rc: AtomicUsize::new(0),
             marked: AtomicBool::new(false),
@@ -46,56 +46,37 @@ impl GCHeapedObject {
         self.marked.load(std::sync::atomic::Ordering::SeqCst)
     }
 
-    pub fn downcast_mut<T: GCTraceable + 'static>(self: &mut Self) -> &mut T {
-        if self.dropped.load(std::sync::atomic::Ordering::SeqCst) {
-            panic!("Attempted to access a dropped object");
-        }
-        if self.type_id != TypeId::of::<T>() {
-            panic!("Type mismatch: expected {:?}, found {:?}", TypeId::of::<T>(), self.type_id);
-        }
-        unsafe { &mut *(self.value as *mut dyn GCTraceable as *mut T) }
-    }
-    pub fn downcast<T: GCTraceable + 'static>(self: &Self) -> &T {
-        if self.dropped.load(std::sync::atomic::Ordering::SeqCst) {
-            panic!("Attempted to access a dropped object");
-        }
-        if self.type_id != TypeId::of::<T>() {
-            panic!("Type mismatch: expected {:?}, found {:?}", TypeId::of::<T>(), self.type_id);
-        }
-        unsafe { &*(self.value as *const dyn GCTraceable as *const T) }
-    }
-
     pub(crate) fn drop_value(self: &mut Self) {
         if self.dropped.load(std::sync::atomic::Ordering::SeqCst) {
             return;
         }
         unsafe {
             drop(Box::from_raw(self.value));
-            self.dropped.store(true, std::sync::atomic::Ordering::SeqCst);
+            self.dropped
+                .store(true, std::sync::atomic::Ordering::SeqCst);
         }
     }
 
-    pub fn isinstance<T: GCTraceable + 'static>(&self) -> bool {
-        self.type_id == TypeId::of::<T>()
-    }
-
-    pub fn as_ref(&self) -> &dyn GCTraceable {
+    pub fn as_ref(&self) -> &T {
         if self.dropped.load(std::sync::atomic::Ordering::SeqCst) {
             panic!("Attempted to access a dropped object");
         }
-        unsafe { &*(self.value as *const dyn GCTraceable) }
+        unsafe { &*self.value }
     }
 
-    pub fn as_mut(&mut self) -> &mut dyn GCTraceable {
+    pub fn as_mut(&mut self) -> &mut T {
         if self.dropped.load(std::sync::atomic::Ordering::SeqCst) {
             panic!("Attempted to access a dropped object");
         }
-        unsafe { &mut *(self.value as *mut dyn GCTraceable) }
+        unsafe { &mut *self.value }
     }
 }
 
-impl Drop for GCHeapedObject {
+impl<T> Drop for GCHeapedObject<T>
+where
+    T: GCTraceable + 'static,
+{
     fn drop(&mut self) {
-        self.drop_value();        
+        self.drop_value();
     }
 }

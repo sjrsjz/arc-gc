@@ -12,13 +12,16 @@ pub trait GCRef {
     fn dec_weak_ref(&self);
 }
 
-pub struct GCArc {
-    obj: NonNull<GCHeapedObject>,
+pub struct GCArc<T: GCTraceable + 'static> {
+    obj: NonNull<GCHeapedObject<T>>,
 }
 
 #[allow(dead_code)]
-impl GCArc {
-    pub fn new<T: GCTraceable + 'static>(obj: T) -> Self {
+impl<T> GCArc<T>
+where
+    T: GCTraceable + 'static,
+{
+    pub fn new(obj: T) -> Self {
         let heaped_obj = Box::new(GCHeapedObject::new(obj));
         let obj_ptr = Box::into_raw(heaped_obj);
         Self {
@@ -57,7 +60,7 @@ impl GCArc {
         }
     }
 
-    pub fn as_weak(&self) -> GCArcWeak {
+    pub fn as_weak(&self) -> GCArcWeak<T> {
         unsafe {
             self.obj
                 .as_ref()
@@ -88,28 +91,12 @@ impl GCArc {
         }
     }
 
-    pub fn downcast<T: GCTraceable + 'static>(&self) -> &T {
-        unsafe { self.obj.as_ref().downcast::<T>() }
+    pub fn as_ref(&self) -> &T {
+        unsafe { self.obj.as_ref().as_ref() }
     }
 
-    pub fn downcast_mut<T: GCTraceable + 'static>(&mut self) -> &mut T {
-        unsafe { self.obj.as_mut().downcast_mut::<T>() }
-    }
-
-    pub fn raw_ptr(&self) -> *mut dyn GCTraceable {
-        unsafe { self.obj.as_ref().value }
-    }
-
-    pub fn raw_mut(&mut self) -> &mut dyn GCTraceable {
-        unsafe { &mut *self.obj.as_mut().value }
-    }
-
-    pub fn raw_ref(&self) -> &dyn GCTraceable {
-        unsafe { &*self.obj.as_ref().value }
-    }
-
-    pub fn isinstance<T: GCTraceable + 'static>(self: &Self) -> bool {
-        unsafe { self.obj.as_ref().isinstance::<T>() }
+    pub fn as_mut(&mut self) -> &mut T {
+        unsafe { self.obj.as_mut().as_mut() }
     }
 
     fn visit(&self) {
@@ -118,12 +105,15 @@ impl GCArc {
         }
     }
 
-    pub(crate) fn ptr_eq(a: &GCArc, b: &GCArc) -> bool {
+    pub(crate) fn ptr_eq(a: &GCArc<T>, b: &GCArc<T>) -> bool {
         unsafe { std::ptr::eq(a.obj.as_ref(), b.obj.as_ref()) }
     }
 }
 
-impl Clone for GCArc {
+impl<T> Clone for GCArc<T>
+where
+    T: GCTraceable + 'static,
+{
     fn clone(&self) -> Self {
         unsafe {
             self.obj
@@ -135,7 +125,10 @@ impl Clone for GCArc {
     }
 }
 
-impl GCRef for GCArc {
+impl<T> GCRef for GCArc<T>
+where
+    T: GCTraceable + 'static,
+{
     fn strong_ref(&self) -> usize {
         unsafe { self.obj.as_ref().strong_ref() }
     }
@@ -218,7 +211,10 @@ impl GCRef for GCArc {
     }
 }
 
-impl Drop for GCArc {
+impl<T> Drop for GCArc<T>
+where
+    T: GCTraceable + 'static,
+{
     fn drop(&mut self) {
         unsafe {
             if self
@@ -247,19 +243,22 @@ impl Drop for GCArc {
     }
 }
 
-unsafe impl Send for GCArc {}
-unsafe impl Sync for GCArc {}
+unsafe impl<T> Send for GCArc<T> where T: GCTraceable + 'static {}
+unsafe impl<T> Sync for GCArc<T> where T: GCTraceable + 'static {}
 
-pub struct GCArcWeak {
-    obj: NonNull<GCHeapedObject>,
+pub struct GCArcWeak<T: GCTraceable + 'static> {
+    obj: NonNull<GCHeapedObject<T>>,
 }
 
 #[allow(dead_code)]
-impl GCArcWeak {
-    pub unsafe fn from_raw(obj: NonNull<GCHeapedObject>) -> Self {
+impl<T> GCArcWeak<T>
+where
+    T: GCTraceable + 'static,
+{
+    pub unsafe fn from_raw(obj: NonNull<GCHeapedObject<T>>) -> Self {
         Self { obj }
     }
-    pub fn upgrade(&self) -> Option<GCArc> {
+    pub fn upgrade(&self) -> Option<GCArc<T>> {
         unsafe {
             let strong_count = self
                 .obj
@@ -285,7 +284,10 @@ impl GCArcWeak {
     }
 }
 
-impl Clone for GCArcWeak {
+impl<T> Clone for GCArcWeak<T>
+where
+    T: GCTraceable + 'static,
+{
     fn clone(&self) -> Self {
         unsafe {
             self.obj
@@ -297,7 +299,10 @@ impl Clone for GCArcWeak {
     }
 }
 
-impl GCRef for GCArcWeak {
+impl<T> GCRef for GCArcWeak<T>
+where
+    T: GCTraceable + 'static,
+{
     fn strong_ref(&self) -> usize {
         unsafe { self.obj.as_ref().strong_ref() }
     }
@@ -380,7 +385,10 @@ impl GCRef for GCArcWeak {
     }
 }
 
-impl Drop for GCArcWeak {
+impl<T> Drop for GCArcWeak<T>
+where
+    T: GCTraceable + 'static,
+{
     fn drop(&mut self) {
         unsafe {
             if self
@@ -408,5 +416,5 @@ impl Drop for GCArcWeak {
     }
 }
 
-unsafe impl Send for GCArcWeak {}
-unsafe impl Sync for GCArcWeak {}
+unsafe impl<T> Send for GCArcWeak<T> where T: GCTraceable + 'static {}
+unsafe impl<T> Sync for GCArcWeak<T> where T: GCTraceable + 'static {}
