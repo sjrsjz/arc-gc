@@ -3,11 +3,11 @@ use std::sync::atomic::{AtomicBool, AtomicUsize};
 use crate::traceable::GCTraceable;
 
 pub struct GCHeapedObject<T: GCTraceable + 'static> {
-    pub value: *mut T,
-    pub strong_rc: AtomicUsize,
-    pub weak_rc: AtomicUsize,
-    pub marked: AtomicBool,
-    pub dropped: AtomicBool,
+    value: *mut T,
+    pub(crate) strong_rc: AtomicUsize,
+    pub(crate) weak_rc: AtomicUsize,
+    pub(crate) marked: AtomicBool,
+    pub(crate) dropped: AtomicBool,
 }
 
 #[allow(dead_code)]
