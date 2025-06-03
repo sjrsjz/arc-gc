@@ -329,6 +329,11 @@ where
                     self.obj.as_ref().strong_rc.fetch_sub(1, Ordering::SeqCst);
                     return None;
                 }
+                // 弱引用计数也需要增加
+                self.obj
+                    .as_ref()
+                    .weak_rc
+                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 Some(GCArc { obj: self.obj })
             } else {
                 None
