@@ -2,7 +2,7 @@ use std::{ptr::NonNull, sync::atomic::{AtomicBool, AtomicUsize}};
 
 use crate::traceable::GCTraceable;
 
-pub struct GCHeapedObject<T: GCTraceable + 'static> {
+pub struct GCHeapedObject<T: GCTraceable<T> + 'static> {
     value: Option<NonNull<T>>,
     pub(crate) strong_rc: AtomicUsize,
     pub(crate) weak_rc: AtomicUsize,
@@ -12,7 +12,7 @@ pub struct GCHeapedObject<T: GCTraceable + 'static> {
 #[allow(dead_code)]
 impl<T> GCHeapedObject<T>
 where
-    T: GCTraceable + 'static,
+    T: GCTraceable<T> + 'static,
 {
     pub fn new(value: T) -> Self {
         Self {

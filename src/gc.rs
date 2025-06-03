@@ -1,11 +1,16 @@
-use std::sync::{atomic::AtomicUsize, Mutex};
+use std::{
+    collections::VecDeque,
+    sync::{atomic::AtomicUsize, Mutex},
+};
+
+use rustc_hash::FxHashMap;
 
 use crate::{
     arc::{GCArc, GCRef},
     traceable::GCTraceable,
 };
 
-pub struct GC<T: GCTraceable + 'static> {
+pub struct GC<T: GCTraceable<T> + 'static> {
     gc_refs: Mutex<Vec<GCArc<T>>>,
     attach_count: AtomicUsize,
     collection_percentage: usize, // 百分比阈值，如20表示20%
@@ -14,7 +19,7 @@ pub struct GC<T: GCTraceable + 'static> {
 #[allow(dead_code)]
 impl<T> GC<T>
 where
-    T: GCTraceable + 'static,
+    T: GCTraceable<T> + 'static,
 {
     /// 创建一个新的垃圾回收器，默认回收触发百分比为20%
     pub fn new() -> Self {
@@ -60,39 +65,108 @@ where
         }
     }
     pub fn collect(&mut self) {
-        // Implement garbage collection logic here
-        // For example, iterate over weak references and clean up if necessary
+        // 执行垃圾回收过程。
+        // 该过程分为两个主要阶段：标记（Mark）和清除（Sweep）。
+        // 1. 标记阶段：从根对象开始，遍历所有可达的对象，并将其标记为“存活”。
+        // 2. 清除阶段：遍历所有GC管理的对象，回收所有未被标记为“存活”的对象。
+
+        // 获取对GC管理的引用列表的可变借用。
+        // `refs` 存储了所有由GC跟踪的 GCArc<T> 对象。
         let mut refs = self.gc_refs.lock().unwrap();
 
-        for r in refs.iter_mut() {
-            r.unmark();
+        // 初始化一个哈希表 `marked` 用于存储每个对象的标记状态。
+        // 键是对象的内存地址（usize类型），值是布尔类型（true表示已标记，false表示未标记）。
+        // 使用 FxHashMap 是为了更快的哈希性能。
+        let mut marked = FxHashMap::default();
+
+        // 初始化标记阶段：将所有GC跟踪的对象在 `marked` 表中初始标记为 `false`（未存活）。
+        // 这一步确保了在开始遍历之前，所有对象都被认为是不可达的。
+        for r in refs.iter() {
+            // 将对象的裸指针（内存地址）作为键。
+            marked.insert(r.as_ref() as *const T as usize, false);
         }
 
-        let mut roots: Vec<&mut GCArc<T>> = refs
-            .iter_mut()
-            .filter(
-                |r| r.strong_ref() > 1, // Assuming strong_ref() > 1 means it's a root
-            )
-            .collect();
+        // 初始化一个双端队列 `queue`，用于广度优先搜索（BFS）遍历对象图。
+        // 队列中存储的是对象的弱引用 (GCArcWeak<T>)，以避免在遍历过程中增加强引用计数，
+        // 从而干扰对象的实际存活状态判断。
+        let mut queue = VecDeque::new();
 
-        for r in roots.iter_mut() {
-            r.mark_and_visit();
+        // 识别根对象（Root Objects）。
+        // 根对象是那些除了GC自身持有的引用外，仍然有外部强引用的对象。
+        // 在这个实现中，如果一个 GCArc<T> 的强引用计数大于1，
+        // （其中1个引用来自 `self.gc_refs` 向量，其余来自外部代码），
+        // 则认为它是根对象。
+        // 将所有根对象的弱引用添加到处理队列 `queue` 中。
+        for r in refs.iter() {
+            if r.strong_ref() > 1 {
+                queue.push_back(r.as_weak());
+            }
         }
 
+        // 开始标记阶段的遍历。
+        // 当队列不为空时，持续处理队列中的对象。
+        while !queue.is_empty() {
+            // 从队列前端取出一个弱引用。
+            // `unwrap()` 在这里是安全的，因为我们刚检查了 `!queue.is_empty()`。
+            let current_weak = queue.pop_front().unwrap();
+
+            // 尝试将弱引用升级为强引用。
+            // 如果升级失败（返回 `None`），意味着该对象已经被释放，
+            // 或者在加入队列后、处理前其强引用计数变为0，所以跳过它。
+            let Some(current_strong) = current_weak.upgrade() else {
+                continue; // 对象已被释放或不再可达
+            };
+
+            // 获取当前强引用指向对象的内存地址。
+            let current_ptr = current_strong.as_ref() as *const T as usize;
+
+            // 检查该对象是否已经被标记过。
+            // `unwrap_or(&false)` 处理了理论上不应发生的情况（对象不在 `marked` 中），
+            // 或者对象已在 `marked` 中且值为 `true`。
+            // 如果对象已经被标记（即 `marked.get(&current_ptr)` 返回 `Some(&true)`），
+            // 则跳过，以避免重复处理和循环引用导致的无限循环。
+            if *marked.get(&current_ptr).unwrap_or(&false) {
+                continue; // 对象已经被访问和标记过了
+            }
+
+            // 将当前对象标记为“存活”（设置为 `true`）。
+            marked.insert(current_ptr, true);
+
+            // 访问当前对象，并收集它引用的其他GC管理的对象。
+            // `GCTraceable::collect` 方法负责将当前对象内部引用的其他
+            // `GCArcWeak<T>` 添加到 `queue` 中，以便后续处理。
+            current_strong.as_ref().collect(&mut queue);
+        }
+
+        // 清除阶段（Sweep Phase）。
+        // 根据 `marked` 表中的标记状态，筛选出所有存活的对象。
+        // `retained` 向量将只包含那些在标记阶段被标记为 `true` 的对象。
         let retained: Vec<GCArc<T>> = refs
-            .iter_mut()
-            .filter(|r| r.is_marked())
-            .map(|r| r.clone())
+            .iter()
+            .filter(|r| {
+                let ptr = r.as_ref() as *const T as usize;
+                // 如果对象在 `marked` 表中为 `true`，则保留它。
+                // `unwrap_or(&false)` 确保如果对象由于某种原因不在 `marked` 中（不应发生），
+                // 它将被视为未标记，从而被回收。
+                *marked.get(&ptr).unwrap_or(&false)
+            })
+            .cloned() // 克隆 GCArc<T> 以便在新向量中拥有它们的所有权。
             .collect();
 
+        // 清空旧的 `refs` 列表。
         refs.clear();
+        // 将所有存活的对象添加回 `refs` 列表。
+        // 此时，`refs` 只包含标记阶段确认存活的对象。
+        // 那些未被标记的对象（即 `retained` 中没有的对象）的 `GCArc` 将会在这里被丢弃。
+        // 如果这些是最后的强引用，对象本身将被 `Drop`。
         refs.extend(retained);
 
-        // 重置计数器
+        // 重置 `attach_count` 计数器。
+        // `attach_count` 用于启发式地决定何时运行垃圾回收。
+        // 在一次完整的回收之后，这个计数器被重置为0。
         self.attach_count
             .store(0, std::sync::atomic::Ordering::Relaxed);
     }
-
     pub fn object_count(&self) -> usize {
         return self.gc_refs.lock().unwrap().len();
     }
@@ -132,12 +206,10 @@ mod tests {
         value: Option<GCArcWeak<TestObjectCell>>,
     }
 
-    impl GCTraceable for TestObject {
-        fn visit(&self) {
-            if let Some(ref weak) = self.value {
-                if let Some(strong) = weak.upgrade() {
-                    strong.mark_and_visit();
-                }
+    impl GCTraceable<TestObjectCell> for TestObject {
+        fn collect(&self, queue: &mut VecDeque<GCArcWeak<TestObjectCell>>) {
+            if let Some(ref weak_ref) = self.value {
+                queue.push_back(weak_ref.clone());
             }
         }
     }
@@ -149,9 +221,13 @@ mod tests {
     }
 
     struct TestObjectCell(RefCell<TestObject>);
-    impl GCTraceable for TestObjectCell {
-        fn visit(&self) {
-            self.0.borrow().visit();
+    impl GCTraceable<TestObjectCell> for TestObjectCell {
+        fn collect(&self, queue: &mut VecDeque<GCArcWeak<TestObjectCell>>) {
+            if let Ok(obj) = self.0.try_borrow() {
+                if let Some(ref weak_ref) = obj.value {
+                    queue.push_back(weak_ref.clone());
+                }
+            }
         }
     }
     impl Drop for TestObjectCell {
@@ -162,7 +238,7 @@ mod tests {
 
     #[test]
     fn test_gc() {
-        let mut gc : GC<TestObjectCell> = GC::new_with_percentage(20);
+        let mut gc: GC<TestObjectCell> = GC::new_with_percentage(20);
         {
             let obj1 = gc.create(TestObjectCell {
                 0: RefCell::new(TestObject { value: None }),
@@ -170,7 +246,7 @@ mod tests {
             let weak_ref = obj1.as_weak();
             match obj1.as_ref().0.try_borrow_mut() {
                 Ok(mut obj) => {
-                   obj.value = Some(weak_ref);
+                    obj.value = Some(weak_ref);
                 }
                 Err(_) => {
                     panic!("Failed to borrow TestObjectCell mutably");

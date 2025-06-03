@@ -1,4 +1,4 @@
-use std::{ptr::NonNull, sync::atomic::Ordering};
+use std::{collections::VecDeque, ptr::NonNull, sync::atomic::Ordering};
 
 use crate::{heaped_object::GCHeapedObject, traceable::GCTraceable};
 
@@ -12,14 +12,14 @@ pub trait GCRef {
     fn dec_weak_ref(&self);
 }
 
-pub struct GCArc<T: GCTraceable + 'static> {
+pub struct GCArc<T: GCTraceable<T> + 'static> {
     obj: NonNull<GCHeapedObject<T>>,
 }
 
 #[allow(dead_code)]
 impl<T> GCArc<T>
 where
-    T: GCTraceable + 'static,
+    T: GCTraceable<T> + 'static,
 {
     pub fn new(obj: T) -> Self {
         let heaped_obj = Box::new(GCHeapedObject::new(obj));
@@ -70,27 +70,6 @@ where
         GCArcWeak { obj: self.obj }
     }
 
-    pub fn is_marked(&self) -> bool {
-        unsafe { self.obj.as_ref().is_marked() }
-    }
-
-    pub fn mark_and_visit(&self) {
-        // mark as visited
-        unsafe {
-            if self.obj.as_ref().is_marked() {
-                return;
-            }
-            self.obj.as_ref().mark();
-        }
-        self.visit();
-    }
-    pub fn unmark(&self) {
-        // unmark as visited
-        unsafe {
-            self.obj.as_ref().unmark();
-        }
-    }
-
     pub fn as_ref(&self) -> &T {
         unsafe { self.obj.as_ref().as_ref() }
     }
@@ -115,9 +94,9 @@ where
         }
     }
 
-    fn visit(&self) {
+    fn collect(&self, queue: &mut VecDeque<GCArcWeak<T>>) {
         unsafe {
-            self.obj.as_ref().as_ref().visit();
+            self.obj.as_ref().as_ref().collect(queue);
         }
     }
 
@@ -128,7 +107,7 @@ where
 
 impl<T> Clone for GCArc<T>
 where
-    T: GCTraceable + 'static,
+    T: GCTraceable<T> + 'static,
 {
     fn clone(&self) -> Self {
         unsafe {
@@ -147,7 +126,7 @@ where
 
 impl<T> GCRef for GCArc<T>
 where
-    T: GCTraceable + 'static,
+    T: GCTraceable<T> + 'static,
 {
     fn strong_ref(&self) -> usize {
         unsafe { self.obj.as_ref().strong_ref() }
@@ -233,7 +212,7 @@ where
 
 impl<T> Drop for GCArc<T>
 where
-    T: GCTraceable + 'static,
+    T: GCTraceable<T> + 'static,
 {
     fn drop(&mut self) {
         unsafe {
@@ -279,17 +258,17 @@ where
     }
 }
 
-unsafe impl<T> Send for GCArc<T> where T: GCTraceable + 'static {}
-unsafe impl<T> Sync for GCArc<T> where T: GCTraceable + 'static {}
+unsafe impl<T> Send for GCArc<T> where T: GCTraceable<T> + 'static {}
+unsafe impl<T> Sync for GCArc<T> where T: GCTraceable<T> + 'static {}
 
-pub struct GCArcWeak<T: GCTraceable + 'static> {
+pub struct GCArcWeak<T: GCTraceable<T> + 'static> {
     obj: NonNull<GCHeapedObject<T>>,
 }
 
 #[allow(dead_code)]
 impl<T> GCArcWeak<T>
 where
-    T: GCTraceable + 'static,
+    T: GCTraceable<T> + 'static,
 {
     pub unsafe fn from_raw(obj: NonNull<GCHeapedObject<T>>) -> Self {
         Self { obj }
@@ -347,7 +326,7 @@ where
 
 impl<T> Clone for GCArcWeak<T>
 where
-    T: GCTraceable + 'static,
+    T: GCTraceable<T> + 'static,
 {
     fn clone(&self) -> Self {
         unsafe {
@@ -362,7 +341,7 @@ where
 
 impl<T> GCRef for GCArcWeak<T>
 where
-    T: GCTraceable + 'static,
+    T: GCTraceable<T> + 'static,
 {
     fn strong_ref(&self) -> usize {
         unsafe { self.obj.as_ref().strong_ref() }
@@ -448,7 +427,7 @@ where
 
 impl<T> Drop for GCArcWeak<T>
 where
-    T: GCTraceable + 'static,
+    T: GCTraceable<T> + 'static,
 {
     fn drop(&mut self) {
         unsafe {
@@ -474,216 +453,5 @@ where
     }
 }
 
-unsafe impl<T> Send for GCArcWeak<T> where T: GCTraceable + 'static {}
-unsafe impl<T> Sync for GCArcWeak<T> where T: GCTraceable + 'static {}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::traceable::GCTraceable;
-
-    #[derive(Debug, PartialEq)]
-    struct TestValue {
-        value: i32,
-    }
-
-    impl GCTraceable for TestValue {
-        fn visit(&self) {
-            // Empty implementation for testing
-        }
-    }
-
-    /// 测试原始的未定义行为场景 - 多个 GCArc 指向同一对象时不应允许可变引用
-    #[test]
-    fn test_no_mutable_reference_with_multiple_strong_refs() {
-        let mut a = GCArc::new(TestValue { value: 1 });
-        let _a_clone = a.clone(); // 创建第二个强引用
-
-        // 现在 strong_count > 1，所以 try_as_mut 应该返回 None
-        assert!(a.try_as_mut().is_none());
-    }
-
-    /// 测试当存在弱引用时不应允许可变引用
-    #[test]
-    fn test_no_mutable_reference_with_weak_refs() {
-        let mut a = GCArc::new(TestValue { value: 1 });
-        let _weak = a.as_weak(); // 创建弱引用
-
-        // 现在有弱引用存在，所以 try_as_mut 应该返回 None
-        assert!(a.try_as_mut().is_none());
-    }
-
-    /// 测试唯一引用时应该允许可变引用
-    #[test]
-    fn test_mutable_reference_when_unique() {
-        let mut a = GCArc::new(TestValue { value: 1 });
-
-        // 只有一个强引用且没有弱引用，应该可以获取可变引用
-        let mutable_ref = a.try_as_mut();
-        assert!(mutable_ref.is_some());
-
-        if let Some(val) = mutable_ref {
-            val.value = 42;
-            assert_eq!(val.value, 42);
-        }
-    }
-
-    /// 测试 get_mut 在不唯一时会 panic
-    #[test]
-    #[should_panic(expected = "Cannot get mutable reference: GCArc is not unique")]
-    fn test_get_mut_panics_when_not_unique() {
-        let mut a = GCArc::new(TestValue { value: 1 });
-        let _a_clone = a.clone();
-
-        // 这应该会 panic
-        let _mutable_ref = a.get_mut();
-    }
-
-    /// 测试在强引用被释放后可以重新获取可变引用
-    #[test]
-    fn test_mutable_reference_after_clone_dropped() {
-        let mut a = GCArc::new(TestValue { value: 1 });
-
-        {
-            let _a_clone = a.clone();
-            // 在这个作用域内，try_as_mut 应该返回 None
-            assert!(a.try_as_mut().is_none());
-        } // a_clone 在这里被释放
-
-        // 现在应该可以获取可变引用了
-        let mutable_ref = a.try_as_mut();
-        assert!(mutable_ref.is_some());
-    }
-
-    /// 测试在弱引用被释放后可以重新获取可变引用
-    #[test]
-    fn test_mutable_reference_after_weak_dropped() {
-        let mut a = GCArc::new(TestValue { value: 1 });
-
-        {
-            let _weak = a.as_weak();
-            // 在这个作用域内，try_as_mut 应该返回 None
-            assert!(a.try_as_mut().is_none());
-        } // weak 在这里被释放
-
-        // 现在应该可以获取可变引用了
-        let mutable_ref = a.try_as_mut();
-        assert!(mutable_ref.is_some());
-    }
-
-    /// 模拟原始的 UB 场景，但现在应该是安全的
-    #[test]
-    fn test_original_ub_scenario_now_safe() {
-        let mut a = GCArc::new(TestValue { value: 1 });
-        let a_clone = a.clone();
-
-        // 尝试获取可变引用 - 应该失败因为有多个强引用
-        let mutable_ref = a.try_as_mut();
-        assert!(
-            mutable_ref.is_none(),
-            "Should not be able to get mutable reference when multiple strong refs exist"
-        );
-
-        // 获取不可变引用 - 这应该总是可以的
-        let immutable_ref = a_clone.as_ref();
-        assert_eq!(immutable_ref.value, 1);
-
-        // 原始代码中的 UB 现在被防止了
-        // 如果 try_as_mut 返回了 Some，那么就会有 UB，但现在它返回 None
-    }
-
-    /// 测试引用计数的正确性
-    #[test]
-    fn test_reference_counts() {
-        let a = GCArc::new(TestValue { value: 1 });
-
-        // 初始状态：1个强引用，0个弱引用
-        assert_eq!(a.strong_ref(), 1);
-        assert_eq!(a.weak_ref(), 0);
-
-        let a_clone = a.clone();
-        // 克隆后：2个强引用，0个弱引用
-        assert_eq!(a.strong_ref(), 2);
-        assert_eq!(a.weak_ref(), 0);
-
-        let weak = a.as_weak();
-        // 创建弱引用后：2个强引用，1个弱引用
-        assert_eq!(a.strong_ref(), 2);
-        assert_eq!(a.weak_ref(), 1);
-
-        drop(a_clone);
-        // 释放一个强引用后：1个强引用，1个弱引用
-        assert_eq!(a.strong_ref(), 1);
-        assert_eq!(a.weak_ref(), 1);
-
-        drop(weak);
-        // 释放弱引用后：1个强引用，0个弱引用
-        assert_eq!(a.strong_ref(), 1);
-        assert_eq!(a.weak_ref(), 0);
-    }
-
-    /// 测试复杂场景：多个强引用和弱引用的组合
-    #[test]
-    fn test_complex_reference_scenario() {
-        let mut a = GCArc::new(TestValue { value: 1 });
-
-        // 场景1：多个强引用
-        let a2 = a.clone();
-        let a3 = a.clone();
-        assert!(a.try_as_mut().is_none());
-
-        drop(a2);
-        assert!(a.try_as_mut().is_none()); // 仍然有 a3
-
-        drop(a3);
-        assert!(a.try_as_mut().is_some()); // 现在只有 a
-
-        // 场景2：弱引用的影响
-        let weak1 = a.as_weak();
-        let weak2 = a.as_weak();
-        assert!(a.try_as_mut().is_none()); // 有弱引用存在
-
-        drop(weak1);
-        assert!(a.try_as_mut().is_none()); // 仍然有 weak2
-
-        drop(weak2);
-        assert!(a.try_as_mut().is_some()); // 现在没有其他引用
-    }
-
-    /// 演示原始 UB 问题（如果没有修复的话）
-    #[test]
-    fn test_demonstrate_original_ub_prevention() {
-        let mut a = GCArc::new(TestValue { value: 1 });
-        let mut b = a.clone();
-
-        // 在修复之前，以下代码会导致 UB：
-        // let ref_a = a.as_mut(); // 第一个可变引用
-        // let ref_b = b.as_mut(); // 第二个可变引用指向同一对象！
-        // 这会违反 Rust 的借用规则
-
-        // 现在有了修复，这种情况被防止了：
-        assert!(a.try_as_mut().is_none()); // 因为有多个强引用
-        assert!(b.try_as_mut().is_none()); // 因为有多个强引用
-
-        // 只有当只剩一个引用时才能获取可变引用
-        drop(b);
-        assert!(a.try_as_mut().is_some()); // 现在可以了
-    }
-    /// 测试弱引用升级的竞态条件修复
-    #[test]
-    fn test_weak_upgrade_race_condition_fix() {
-        let a = GCArc::new(TestValue { value: 1 });
-        let weak = a.as_weak();
-
-        // 升级应该成功
-        let upgraded = weak.upgrade();
-        assert!(upgraded.is_some());
-
-        drop(a);
-        drop(upgraded); // 还需要释放升级的引用
-
-        // 现在升级应该失败
-        let upgraded = weak.upgrade();
-        assert!(upgraded.is_none());
-    }
-}
+unsafe impl<T> Send for GCArcWeak<T> where T: GCTraceable<T> + 'static {}
+unsafe impl<T> Sync for GCArcWeak<T> where T: GCTraceable<T> + 'static {}

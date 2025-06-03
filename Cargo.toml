@@ -1,6 +1,6 @@
 [package]
 name = "rust-arc-gc"
-version = "0.1.6"
+version = "0.1.7"
 edition = "2021"
 description = "A simple GCArc implementation for Rust"
 license-file = "LICENSE"
@@ -16,6 +16,7 @@ name = "arc_gc"
 path = "src/lib.rs"
 
 [dependencies]
+rustc-hash = "2.1.1"
 
 [workspace]
 members = [
