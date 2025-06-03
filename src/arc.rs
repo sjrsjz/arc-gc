@@ -1,7 +1,4 @@
-use std::{
-    ptr::NonNull,
-    sync::atomic::Ordering,
-};
+use std::{ptr::NonNull, sync::atomic::Ordering};
 
 use crate::{heaped_object::GCHeapedObject, traceable::GCTraceable};
 
@@ -139,6 +136,10 @@ where
                 .as_ref()
                 .strong_rc
                 .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.obj
+                .as_ref()
+                .weak_rc
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         }
         Self { obj: self.obj }
     }
@@ -253,10 +254,26 @@ where
                 == 1
             {
                 self.obj.as_mut().drop_value();
-                // 如果没有弱引用，释放对象
-                if self.obj.as_ref().weak_ref() == 0 {
-                    drop(Box::from_raw(self.obj.as_ptr()));
-                }
+            }
+            if self
+                .obj
+                .as_ref()
+                .weak_rc
+                .load(std::sync::atomic::Ordering::SeqCst)
+                == 0
+            {
+                panic!("Attempted to drop a GCArc with 0 weak references");
+            }
+            // 减少弱引用计数
+            if self
+                .obj
+                .as_ref()
+                .weak_rc
+                .fetch_sub(1, std::sync::atomic::Ordering::SeqCst)
+                == 1
+            {
+                // 如果弱引用计数降到0，释放对象
+                drop(Box::from_raw(self.obj.as_ptr()));
             }
         }
     }
@@ -293,7 +310,7 @@ where
 
         unsafe {
             // 首先检查对象是否已被标记为释放
-            if self.obj.as_ref().dropped.load(Ordering::Acquire) {
+            if self.obj.as_ref().is_dropped() {
                 return None;
             }
 
@@ -307,7 +324,7 @@ where
                 .is_ok()
             {
                 // 再次检查对象是否在我们增加计数后被释放
-                if self.obj.as_ref().dropped.load(Ordering::Acquire) {
+                if self.obj.as_ref().is_dropped() {
                     // 如果对象已被释放，撤销计数增加
                     self.obj.as_ref().strong_rc.fetch_sub(1, Ordering::SeqCst);
                     return None;
@@ -446,10 +463,7 @@ where
                 .fetch_sub(1, std::sync::atomic::Ordering::SeqCst)
                 == 1
             {
-                // 如果没有强引用，释放对象
-                if self.obj.as_ref().strong_ref() == 0 {
-                    drop(Box::from_raw(self.obj.as_ptr()));
-                }
+                drop(Box::from_raw(self.obj.as_ptr()));
             }
         }
     }

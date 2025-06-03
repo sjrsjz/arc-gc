@@ -1,13 +1,12 @@
-use std::sync::atomic::{AtomicBool, AtomicUsize};
+use std::{ptr::NonNull, sync::atomic::{AtomicBool, AtomicUsize}};
 
 use crate::traceable::GCTraceable;
 
 pub struct GCHeapedObject<T: GCTraceable + 'static> {
-    value: *mut T,
+    value: Option<NonNull<T>>,
     pub(crate) strong_rc: AtomicUsize,
     pub(crate) weak_rc: AtomicUsize,
     pub(crate) marked: AtomicBool,
-    pub(crate) dropped: AtomicBool,
 }
 
 #[allow(dead_code)]
@@ -17,11 +16,10 @@ where
 {
     pub fn new(value: T) -> Self {
         Self {
-            value: Box::into_raw(Box::new(value)),
+            value: NonNull::new(Box::into_raw(Box::new(value))),
             strong_rc: AtomicUsize::new(1),
-            weak_rc: AtomicUsize::new(0),
+            weak_rc: AtomicUsize::new(1),
             marked: AtomicBool::new(false),
-            dropped: AtomicBool::new(false),
         }
     }
 
@@ -46,37 +44,35 @@ where
         self.marked.load(std::sync::atomic::Ordering::SeqCst)
     }
 
+    pub fn is_dropped(&self) -> bool {
+        self.value.is_none()
+    }
+
     pub(crate) fn drop_value(self: &mut Self) {
-        if self.dropped.load(std::sync::atomic::Ordering::SeqCst) {
-            return;
-        }
-        unsafe {
-            drop(Box::from_raw(self.value));
-            self.dropped
-                .store(true, std::sync::atomic::Ordering::SeqCst);
+        if let Some(ptr) = self.value {
+            self.value = None;
+            unsafe {
+                drop(Box::from_raw(ptr.as_ptr()));
+            }
         }
     }
 
     pub fn as_ref(&self) -> &T {
-        if self.dropped.load(std::sync::atomic::Ordering::SeqCst) {
-            panic!("Attempted to access a dropped object");
-        }
-        unsafe { &*self.value }
+        match self.value {
+            Some(ptr) => {
+                unsafe { &*ptr.as_ptr() }
+            }
+            None => panic!("Attempted to access a value that has been dropped"),            
+        }        
     }
 
     pub fn as_mut(&mut self) -> &mut T {
-        if self.dropped.load(std::sync::atomic::Ordering::SeqCst) {
-            panic!("Attempted to access a dropped object");
+        match self.value {
+            Some(ptr) => {
+                unsafe { &mut *ptr.as_ptr() }
+            }
+            None => panic!("Attempted to access a value that has been dropped"),
         }
-        unsafe { &mut *self.value }
     }
 }
 
-impl<T> Drop for GCHeapedObject<T>
-where
-    T: GCTraceable + 'static,
-{
-    fn drop(&mut self) {
-        self.drop_value();
-    }
-}

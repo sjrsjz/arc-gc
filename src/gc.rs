@@ -41,7 +41,8 @@ where
             gc_refs.push(gc_arc);
         }
 
-        self.attach_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.attach_count
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
         // 启发式回收检查
         if self.should_collect() {
@@ -88,7 +89,8 @@ where
         refs.extend(retained);
 
         // 重置计数器
-        self.attach_count.store(0, std::sync::atomic::Ordering::Relaxed);
+        self.attach_count
+            .store(0, std::sync::atomic::Ordering::Relaxed);
     }
 
     pub fn object_count(&self) -> usize {
@@ -116,5 +118,67 @@ where
         // 当attach次数超过当前对象数的指定百分比时触发回收
         let threshold = (current_count * self.collection_percentage) / 100;
         attach_count >= threshold.max(1) // 至少1次attach才触发
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::cell::RefCell;
+
+    use super::*;
+    use crate::{arc::GCArcWeak, traceable::GCTraceable};
+
+    struct TestObject {
+        value: Option<GCArcWeak<TestObjectCell>>,
+    }
+
+    impl GCTraceable for TestObject {
+        fn visit(&self) {
+            if let Some(ref weak) = self.value {
+                if let Some(strong) = weak.upgrade() {
+                    strong.mark_and_visit();
+                }
+            }
+        }
+    }
+
+    impl Drop for TestObject {
+        fn drop(&mut self) {
+            println!("Dropping TestObject: address={:p}", self);
+        }
+    }
+
+    struct TestObjectCell(RefCell<TestObject>);
+    impl GCTraceable for TestObjectCell {
+        fn visit(&self) {
+            self.0.borrow().visit();
+        }
+    }
+    impl Drop for TestObjectCell {
+        fn drop(&mut self) {
+            println!("Dropping TestObjectCell: address={:p}", self);
+        }
+    }
+
+    #[test]
+    fn test_gc() {
+        let mut gc : GC<TestObjectCell> = GC::new_with_percentage(20);
+        {
+            let obj1 = gc.create(TestObjectCell {
+                0: RefCell::new(TestObject { value: None }),
+            });
+            let weak_ref = obj1.as_weak();
+            match obj1.as_ref().0.try_borrow_mut() {
+                Ok(mut obj) => {
+                   obj.value = Some(weak_ref);
+                }
+                Err(_) => {
+                    panic!("Failed to borrow TestObjectCell mutably");
+                }
+            }
+            print!("GC object count before collection: {}\n", gc.object_count());
+        }
+        gc.collect();
+        println!("GC completed, all objects should be dropped now.");
     }
 }
