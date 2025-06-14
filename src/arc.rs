@@ -1,19 +1,53 @@
-use std::{collections::VecDeque, ptr::NonNull, sync::atomic::Ordering};
+use std::{
+    collections::VecDeque,
+    sync::{atomic::AtomicUsize, Arc, Weak},
+};
 
-use crate::{heaped_object::GCHeapedObject, traceable::GCTraceable};
+use crate::traceable::GCTraceable;
+
+/// GCWrapper 包装器，包含被垃圾回收的对象和附加的GC计数
+pub struct GCWrapper<T: GCTraceable<T> + 'static> {
+    value: T,
+    pub(crate) attached_gc_count: AtomicUsize,
+}
+
+impl<T: GCTraceable<T> + 'static> GCWrapper<T> {
+    pub fn new(value: T) -> Self {
+        Self {
+            value,
+            attached_gc_count: AtomicUsize::new(0),
+        }
+    }
+
+    pub fn value(&self) -> &T {
+        &self.value
+    }
+
+    pub fn value_mut(&mut self) -> &mut T {
+        &mut self.value
+    }
+}
 
 #[allow(dead_code)]
 pub trait GCRef {
     fn strong_ref(&self) -> usize;
     fn weak_ref(&self) -> usize;
-    fn inc_ref(&self);
-    fn dec_ref(&self);
-    fn inc_weak_ref(&self);
-    fn dec_weak_ref(&self);
 }
 
 pub struct GCArc<T: GCTraceable<T> + 'static> {
-    obj: NonNull<GCHeapedObject<T>>,
+    inner: Arc<GCWrapper<T>>,
+}
+
+impl<T: GCTraceable<T> + 'static> Into<GCArc<T>> for Arc<GCWrapper<T>> {
+    fn into(self) -> GCArc<T> {
+        GCArc { inner: self }
+    }
+}
+
+impl<T: GCTraceable<T> + 'static> From<GCArc<T>> for Arc<GCWrapper<T>> {
+    fn from(gc_arc: GCArc<T>) -> Self {
+        gc_arc.inner
+    }
 }
 
 #[allow(dead_code)]
@@ -22,56 +56,18 @@ where
     T: GCTraceable<T> + 'static,
 {
     pub fn new(obj: T) -> Self {
-        let heaped_obj = Box::new(GCHeapedObject::new(obj));
-        let obj_ptr = Box::into_raw(heaped_obj);
         Self {
-            obj: NonNull::new(obj_ptr).expect("Unable to create GCArc"),
+            inner: Arc::new(GCWrapper::new(obj)),
         }
     }
-    pub unsafe fn inc_ref(&self) {
-        unsafe {
-            self.obj
-                .as_ref()
-                .strong_rc
-                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        }
-    }
-
-    pub unsafe fn dec_ref(&self) {
-        unsafe {
-            if self
-                .obj
-                .as_ref()
-                .strong_rc
-                .load(std::sync::atomic::Ordering::SeqCst)
-                == 0
-            {
-                panic!("Attempted to decrement a GCArc with 0 strong references");
-            }
-            if self
-                .obj
-                .as_ref()
-                .strong_rc
-                .fetch_sub(1, std::sync::atomic::Ordering::SeqCst)
-                == 1
-            {
-                drop(Box::from_raw(self.obj.as_ptr()));
-            }
-        }
-    }
-
     pub fn as_weak(&self) -> GCArcWeak<T> {
-        unsafe {
-            self.obj
-                .as_ref()
-                .weak_rc
-                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        GCArcWeak {
+            inner: Arc::downgrade(&self.inner),
         }
-        GCArcWeak { obj: self.obj }
     }
 
     pub fn as_ref(&self) -> &T {
-        unsafe { self.obj.as_ref().as_ref() }
+        &self.inner.value
     }
 
     pub fn get_mut(&mut self) -> &mut T {
@@ -83,25 +79,20 @@ where
     }
 
     pub fn try_as_mut(&mut self) -> Option<&mut T> {
-        let strong_count = unsafe { self.obj.as_ref().strong_rc.load(Ordering::SeqCst) };
-        let weak_count = unsafe { self.obj.as_ref().weak_rc.load(Ordering::SeqCst) };
-
-        // 只有当强引用计数为1且没有弱引用时才允许可变访问
-        if strong_count == 1 && weak_count == 0 {
-            Some(unsafe { self.obj.as_mut().as_mut() })
-        } else {
-            None
-        }
+        Arc::get_mut(&mut self.inner).map(|wrapper| &mut wrapper.value)
     }
 
     fn collect(&self, queue: &mut VecDeque<GCArcWeak<T>>) {
-        unsafe {
-            self.obj.as_ref().as_ref().collect(queue);
-        }
+        self.inner.value.collect(queue);
     }
 
     pub(crate) fn ptr_eq(a: &GCArc<T>, b: &GCArc<T>) -> bool {
-        unsafe { std::ptr::eq(a.obj.as_ref(), b.obj.as_ref()) }
+        Arc::ptr_eq(&a.inner, &b.inner)
+    }
+
+    #[inline(always)]
+    pub(crate) fn inner(&self) -> &GCWrapper<T> {
+        &self.inner
     }
 }
 
@@ -110,17 +101,9 @@ where
     T: GCTraceable<T> + 'static,
 {
     fn clone(&self) -> Self {
-        unsafe {
-            self.obj
-                .as_ref()
-                .strong_rc
-                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            self.obj
-                .as_ref()
-                .weak_rc
-                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Self {
+            inner: self.inner.clone(),
         }
-        Self { obj: self.obj }
     }
 }
 
@@ -129,132 +112,11 @@ where
     T: GCTraceable<T> + 'static,
 {
     fn strong_ref(&self) -> usize {
-        unsafe { self.obj.as_ref().strong_ref() }
+        Arc::strong_count(&self.inner)
     }
 
     fn weak_ref(&self) -> usize {
-        unsafe { self.obj.as_ref().weak_ref() }
-    }
-
-    fn inc_ref(&self) {
-        unsafe {
-            if self
-                .obj
-                .as_ref()
-                .strong_rc
-                .load(std::sync::atomic::Ordering::SeqCst)
-                == 0
-            {
-                panic!("Attempted to increment a GCArc with 0 strong references");
-            }
-            self.obj
-                .as_ref()
-                .strong_rc
-                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        }
-    }
-
-    fn dec_ref(&self) {
-        unsafe {
-            if self
-                .obj
-                .as_ref()
-                .strong_rc
-                .load(std::sync::atomic::Ordering::SeqCst)
-                == 0
-            {
-                panic!("Attempted to decrement a GCArc with 0 strong references");
-            }
-            if self
-                .obj
-                .as_ref()
-                .strong_rc
-                .fetch_sub(1, std::sync::atomic::Ordering::SeqCst)
-                == 1
-            {
-                drop(Box::from_raw(self.obj.as_ptr()));
-            }
-        }
-    }
-
-    fn inc_weak_ref(&self) {
-        unsafe {
-            self.obj
-                .as_ref()
-                .weak_rc
-                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        }
-    }
-
-    fn dec_weak_ref(&self) {
-        unsafe {
-            if self
-                .obj
-                .as_ref()
-                .weak_rc
-                .load(std::sync::atomic::Ordering::SeqCst)
-                == 0
-            {
-                panic!("Attempted to decrement a GCArc with 0 weak references");
-            }
-            if self
-                .obj
-                .as_ref()
-                .weak_rc
-                .fetch_sub(1, std::sync::atomic::Ordering::SeqCst)
-                == 1
-            {
-                drop(Box::from_raw(self.obj.as_ptr()));
-            }
-        }
-    }
-}
-
-impl<T> Drop for GCArc<T>
-where
-    T: GCTraceable<T> + 'static,
-{
-    fn drop(&mut self) {
-        unsafe {
-            if self
-                .obj
-                .as_ref()
-                .strong_rc
-                .load(std::sync::atomic::Ordering::SeqCst)
-                == 0
-            {
-                panic!("Attempted to drop a GCArc with 0 strong references");
-            }
-            if self
-                .obj
-                .as_mut()
-                .strong_rc
-                .fetch_sub(1, std::sync::atomic::Ordering::SeqCst)
-                == 1
-            {
-                self.obj.as_mut().drop_value();
-            }
-            if self
-                .obj
-                .as_ref()
-                .weak_rc
-                .load(std::sync::atomic::Ordering::SeqCst)
-                == 0
-            {
-                panic!("Attempted to drop a GCArc with 0 weak references");
-            }
-            // 减少弱引用计数
-            if self
-                .obj
-                .as_ref()
-                .weak_rc
-                .fetch_sub(1, std::sync::atomic::Ordering::SeqCst)
-                == 1
-            {
-                // 如果弱引用计数降到0，释放对象
-                drop(Box::from_raw(self.obj.as_ptr()));
-            }
-        }
+        Arc::weak_count(&self.inner)
     }
 }
 
@@ -262,7 +124,19 @@ unsafe impl<T> Send for GCArc<T> where T: GCTraceable<T> + 'static {}
 unsafe impl<T> Sync for GCArc<T> where T: GCTraceable<T> + 'static {}
 
 pub struct GCArcWeak<T: GCTraceable<T> + 'static> {
-    obj: NonNull<GCHeapedObject<T>>,
+    inner: Weak<GCWrapper<T>>,
+}
+
+impl<T: GCTraceable<T> + 'static> Into<GCArcWeak<T>> for Weak<GCWrapper<T>> {
+    fn into(self) -> GCArcWeak<T> {
+        GCArcWeak { inner: self }
+    }
+}
+
+impl<T: GCTraceable<T> + 'static> From<GCArcWeak<T>> for Weak<GCWrapper<T>> {
+    fn from(gc_arc_weak: GCArcWeak<T>) -> Self {
+        gc_arc_weak.inner
+    }
 }
 
 #[allow(dead_code)]
@@ -270,57 +144,12 @@ impl<T> GCArcWeak<T>
 where
     T: GCTraceable<T> + 'static,
 {
-    pub unsafe fn from_raw(obj: NonNull<GCHeapedObject<T>>) -> Self {
-        Self { obj }
-    }
     pub fn upgrade(&self) -> Option<GCArc<T>> {
-        #[inline]
-        fn checked_increment(n: usize) -> Option<usize> {
-            // 如果强引用计数为0，对象已被释放
-            if n == 0 {
-                return None;
-            }
-            // 防止引用计数溢出
-            if n >= usize::MAX / 2 {
-                panic!("Reference count overflow");
-            }
-            Some(n + 1)
-        }
-
-        unsafe {
-            // 首先检查对象是否已被标记为释放
-            if self.obj.as_ref().is_dropped() {
-                return None;
-            }
-
-            // 使用 fetch_update 原子地尝试增加强引用计数
-            // 这比手动循环更高效且更安全
-            if self
-                .obj
-                .as_ref()
-                .strong_rc
-                .fetch_update(Ordering::SeqCst, Ordering::Relaxed, checked_increment)
-                .is_ok()
-            {
-                // 再次检查对象是否在我们增加计数后被释放
-                if self.obj.as_ref().is_dropped() {
-                    // 如果对象已被释放，撤销计数增加
-                    self.obj.as_ref().strong_rc.fetch_sub(1, Ordering::SeqCst);
-                    return None;
-                }
-                // 弱引用计数也需要增加
-                self.obj
-                    .as_ref()
-                    .weak_rc
-                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                Some(GCArc { obj: self.obj })
-            } else {
-                None
-            }
-        }
+        self.inner.upgrade().map(|inner| GCArc { inner })
     }
+
     pub fn is_valid(&self) -> bool {
-        unsafe { self.obj.as_ref().strong_ref() > 0 }
+        self.inner.strong_count() > 0
     }
 }
 
@@ -329,13 +158,9 @@ where
     T: GCTraceable<T> + 'static,
 {
     fn clone(&self) -> Self {
-        unsafe {
-            self.obj
-                .as_ref()
-                .weak_rc
-                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Self {
+            inner: self.inner.clone(),
         }
-        Self { obj: self.obj }
     }
 }
 
@@ -344,112 +169,11 @@ where
     T: GCTraceable<T> + 'static,
 {
     fn strong_ref(&self) -> usize {
-        unsafe { self.obj.as_ref().strong_ref() }
+        self.inner.strong_count()
     }
 
     fn weak_ref(&self) -> usize {
-        unsafe { self.obj.as_ref().weak_ref() }
-    }
-
-    fn inc_ref(&self) {
-        unsafe {
-            if self
-                .obj
-                .as_ref()
-                .strong_rc
-                .load(std::sync::atomic::Ordering::SeqCst)
-                == 0
-            {
-                panic!("Attempted to increment a GCArcWeak with 0 strong references");
-            }
-            self.obj
-                .as_ref()
-                .strong_rc
-                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        }
-    }
-
-    fn dec_ref(&self) {
-        unsafe {
-            if self
-                .obj
-                .as_ref()
-                .strong_rc
-                .load(std::sync::atomic::Ordering::SeqCst)
-                == 0
-            {
-                panic!("Attempted to decrement a GCArcWeak with 0 strong references");
-            }
-            if self
-                .obj
-                .as_ref()
-                .strong_rc
-                .fetch_sub(1, std::sync::atomic::Ordering::SeqCst)
-                == 1
-            {
-                drop(Box::from_raw(self.obj.as_ptr()));
-            }
-        }
-    }
-
-    fn inc_weak_ref(&self) {
-        unsafe {
-            self.obj
-                .as_ref()
-                .weak_rc
-                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        }
-    }
-
-    fn dec_weak_ref(&self) {
-        unsafe {
-            if self
-                .obj
-                .as_ref()
-                .weak_rc
-                .load(std::sync::atomic::Ordering::SeqCst)
-                == 0
-            {
-                panic!("Attempted to decrement a GCArcWeak with 0 weak references");
-            }
-            if self
-                .obj
-                .as_ref()
-                .weak_rc
-                .fetch_sub(1, std::sync::atomic::Ordering::SeqCst)
-                == 1
-            {
-                drop(Box::from_raw(self.obj.as_ptr()));
-            }
-        }
-    }
-}
-
-impl<T> Drop for GCArcWeak<T>
-where
-    T: GCTraceable<T> + 'static,
-{
-    fn drop(&mut self) {
-        unsafe {
-            if self
-                .obj
-                .as_ref()
-                .weak_rc
-                .load(std::sync::atomic::Ordering::SeqCst)
-                == 0
-            {
-                panic!("Attempted to drop a GCArcWeak with 0 weak references");
-            }
-            if self
-                .obj
-                .as_ref()
-                .weak_rc
-                .fetch_sub(1, std::sync::atomic::Ordering::SeqCst)
-                == 1
-            {
-                drop(Box::from_raw(self.obj.as_ptr()));
-            }
-        }
+        self.inner.weak_count()
     }
 }
 
