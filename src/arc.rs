@@ -120,9 +120,6 @@ where
     }
 }
 
-unsafe impl<T> Send for GCArc<T> where T: GCTraceable<T> + 'static {}
-unsafe impl<T> Sync for GCArc<T> where T: GCTraceable<T> + 'static {}
-
 pub struct GCArcWeak<T: GCTraceable<T> + 'static> {
     inner: Weak<GCWrapper<T>>,
 }
@@ -176,6 +173,3 @@ where
         self.inner.weak_count()
     }
 }
-
-unsafe impl<T> Send for GCArcWeak<T> where T: GCTraceable<T> + 'static {}
-unsafe impl<T> Sync for GCArcWeak<T> where T: GCTraceable<T> + 'static {}
